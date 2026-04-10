@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -43,10 +44,10 @@ void _disableAndroidSoftKeyboard({bool? isKeyboardVisible}) {
 class RemotePage extends StatefulWidget {
   RemotePage(
       {Key? key,
-      required this.id,
-      this.password,
-      this.isSharedPassword,
-      this.forceRelay})
+        required this.id,
+        this.password,
+        this.isSharedPassword,
+        this.forceRelay})
       : super(key: key);
 
   final String id;
@@ -64,7 +65,9 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
   bool _showGestureHelp = false;
   String _value = '';
   Orientation? _currentOrientation;
+  double _viewInsetsBottom = 0;
   final _uniqueKey = UniqueKey();
+  Timer? _timerDidChangeMetrics;
   Timer? _iosKeyboardWorkaroundTimer;
 
   final _blockableOverlayState = BlockableOverlayState();
@@ -79,7 +82,7 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
   SessionID get sessionId => gFFI.sessionId;
 
   final TextEditingController _textController =
-      TextEditingController(text: initText);
+  TextEditingController(text: initText);
 
   _RemotePageState(String id) {
     initSharedStates(id);
@@ -137,6 +140,7 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
     _physicalFocusNode.dispose();
     await gFFI.close();
     _timer?.cancel();
+    _timerDidChangeMetrics?.cancel();
     _iosKeyboardWorkaroundTimer?.cancel();
     gFFI.dialogManager.dismissAll();
     await SystemChrome.setEnabledSystemUIMode(SystemUiMode.manual,
@@ -163,6 +167,26 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
     gFFI.invokeMethod("try_sync_clipboard");
   }
 
+  @override
+  void didChangeMetrics() {
+    // If the soft keyboard is visible and the canvas has been changed(panned or scaled)
+    // Don't try reset the view style and focus the cursor.
+    if (gFFI.cursorModel.lastKeyboardIsVisible &&
+        gFFI.canvasModel.isMobileCanvasChanged) {
+      return;
+    }
+
+    final newBottom = MediaQueryData.fromView(ui.window).viewInsets.bottom;
+    _timerDidChangeMetrics?.cancel();
+    _timerDidChangeMetrics = Timer(Duration(milliseconds: 100), () async {
+      // We need this comparation because poping up the floating action will also trigger `didChangeMetrics()`.
+      if (newBottom != _viewInsetsBottom) {
+        gFFI.canvasModel.mobileFocusCanvasCursor();
+        _viewInsetsBottom = newBottom;
+      }
+    });
+  }
+
   // to-do: It should be better to use transparent color instead of the bgColor.
   // But for now, the transparent color will cause the canvas to be white.
   // I'm sure that the white color is caused by the Overlay widget in BlockableOverlay.
@@ -177,6 +201,7 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
       );
 
   void onSoftKeyboardChanged(bool visible) {
+    inputModel.androidSoftKeyboardActive = visible;
     if (!visible) {
       SystemChrome.setEnabledSystemUIMode(SystemUiMode.manual, overlays: []);
       // [pi.version.isNotEmpty] -> check ready or not, avoid login without soft-keyboard
@@ -227,10 +252,10 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
     // get common prefix of subNewValue and subOldValue
     var common = 0;
     for (;
-        common < subOldValue.length &&
-            common < subNewValue.length &&
-            subNewValue[common] == subOldValue[common];
-        ++common) {}
+    common < subOldValue.length &&
+        common < subNewValue.length &&
+        subNewValue[common] == subOldValue[common];
+    ++common) {}
 
     // get newStr from subNewValue
     var newStr = "";
@@ -276,10 +301,18 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
     if (newValue.length == oldValue.length) {
       // ?
     } else if (newValue.length < oldValue.length) {
-      final char = 'VK_BACK';
-      inputModel.inputKey(char);
+      // Send exactly one VK_BACK per onChanged callback regardless of how many
+      // characters the IME removed (Samsung accelerates held-delete).  The
+      // IME's own callback frequency provides a steady, controllable repeat
+      // rate instead of runaway exponential deletion.
+      inputModel.inputKey('VK_BACK');
     } else {
       final content = newValue.substring(oldValue.length);
+      // Android IMEs like Gboard can leave modifier state (especially Shift)
+      // logically active even though the inserted text is already composed.
+      // Clear modifiers before forwarding soft-keyboard text so host-side
+      // legacy character input does not apply Shift twice.
+      inputModel.releaseTransientModifiersToHost();
       if (content.length > 1) {
         if (oldValue != '' &&
             content.length == 2 &&
@@ -314,12 +347,19 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
   }
 
   void inputChar(String char) {
+    inputModel.releaseTransientModifiersToHost();
     if (char == '\n') {
       char = 'VK_RETURN';
     } else if (char == ' ') {
       char = 'VK_SPACE';
     }
-    inputModel.inputKey(char);
+    // Android soft-keyboard text is already composed; forwarding leaked modifier
+    // state from IMEs like Gboard can make subsequent characters stay shifted.
+    inputModel.inputKey(char,
+        altOverride: inputModel.altLocked,
+        ctrlOverride: inputModel.ctrlLocked,
+        shiftOverride: inputModel.shiftLocked,
+        commandOverride: inputModel.commandLocked);
   }
 
   void openKeyboard() {
@@ -887,7 +927,11 @@ class _KeyHelpToolsState extends State<KeyHelpTools> {
     final hasModifierOn = inputModel.ctrl ||
         inputModel.alt ||
         inputModel.shift ||
-        inputModel.command;
+        inputModel.command ||
+        inputModel.ctrlLocked ||
+        inputModel.altLocked ||
+        inputModel.shiftLocked ||
+        inputModel.commandLocked;
 
     if (!_pin && !hasModifierOn && !widget.requestShow) {
       gFFI.cursorModel
@@ -902,17 +946,17 @@ class _KeyHelpToolsState extends State<KeyHelpTools> {
     final isLinux = pi.platform == kPeerPlatformLinux;
     final modifiers = <Widget>[
       wrap('Ctrl ', () {
-        setState(() => inputModel.ctrl = !inputModel.ctrl);
-      }, active: inputModel.ctrl),
+        setState(() => inputModel.ctrlLocked = !inputModel.ctrlLocked);
+      }, active: inputModel.ctrl || inputModel.ctrlLocked),
       wrap(' Alt ', () {
-        setState(() => inputModel.alt = !inputModel.alt);
-      }, active: inputModel.alt),
+        setState(() => inputModel.altLocked = !inputModel.altLocked);
+      }, active: inputModel.alt || inputModel.altLocked),
       wrap('Shift', () {
-        setState(() => inputModel.shift = !inputModel.shift);
-      }, active: inputModel.shift),
+        setState(() => inputModel.shiftLocked = !inputModel.shiftLocked);
+      }, active: inputModel.shift || inputModel.shiftLocked),
       wrap(isMac ? ' Cmd ' : ' Win ', () {
-        setState(() => inputModel.command = !inputModel.command);
-      }, active: inputModel.command),
+        setState(() => inputModel.commandLocked = !inputModel.commandLocked);
+      }, active: inputModel.command || inputModel.commandLocked),
     ];
     final keys = <Widget>[
       wrap(
