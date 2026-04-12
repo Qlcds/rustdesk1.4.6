@@ -743,5 +743,9 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("Display Name", "Görünen Ad"),
         ("password-hidden-tip", "Şifre gizli"),
         ("preset-password-in-use-tip", "Önceden ayarlanmış şifre kullanılıyor"),
+        ("wayland-keyboard-input-disabled-tip", ""),
+        ("wayland-keyboard-input-consent-tip", ""),
+        ("wayland-keyboard-input-clear-perm-tip", ""),
+        ("remember-wayland-keyboard-choice-tip", ""),
     ].iter().cloned().collect();
 }
