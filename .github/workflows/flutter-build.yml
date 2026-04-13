@@ -532,15 +532,48 @@ jobs:
         shell: bash
         run: |
           pushd flutter
-          flutter build ipa --release --no-codesign
+          # 清理之前的构建
+          flutter clean
+          # 获取依赖
+          flutter pub get
+          # 构建 iOS（不签名）
+          flutter build ios --release --no-codesign
+          # 创建 IPA
+          mkdir -p build/ios/ipa
+          if [ -d "build/ios/iphoneos/Runner.app" ]; then
+            cd build/ios/iphoneos
+            # 创建 Payload 目录结构
+            mkdir -p Payload
+            cp -r Runner.app Payload/
+            # 打包成 IPA
+            zip -r ../ipa/Runner.ipa Payload/
+            cd -
+            echo "✅ IPA created successfully at build/ios/ipa/Runner.ipa"
+          else
+            echo "❌ Runner.app not found, build may have failed"
+            ls -la build/ios/ || true
+            exit 1
+          fi
           popd
+
+      - name: Verify IPA exists
+        shell: bash
+        run: |
+          if [ -f "flutter/build/ios/ipa/Runner.ipa" ]; then
+            echo "✅ IPA file found"
+            ls -lh flutter/build/ios/ipa/Runner.ipa
+          else
+            echo "❌ IPA file not found"
+            find flutter -name "*.ipa" 2>/dev/null || echo "No IPA files anywhere"
+            exit 1
+          fi
 
       - name: Upload IPA Artifacts
         if: env.UPLOAD_ARTIFACT == 'true'
         uses: actions/upload-artifact@master
         with:
           name: rustdesk-${{ env.VERSION }}-ios.ipa
-          path: flutter/build/ios/ipa/*.ipa
+          path: flutter/build/ios/ipa/Runner.ipa
 
       - name: Publish ipa package
         if: env.UPLOAD_ARTIFACT == 'true'
@@ -549,7 +582,7 @@ jobs:
           prerelease: true
           tag_name: ${{ env.TAG_NAME }}
           files: |
-            flutter/build/ios/ipa/*.ipa
+            flutter/build/ios/ipa/Runner.ipa
 
   build-for-macOS:
     name: ${{ matrix.job.target }}
