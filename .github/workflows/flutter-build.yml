@@ -458,6 +458,7 @@ jobs:
       - name: Install dependencies
         run: |
           brew install nasm yasm
+
       - name: Checkout source code
         uses: actions/checkout@v4
         with:
@@ -520,37 +521,35 @@ jobs:
         run: |
           rustup target add ${{ matrix.job.target }}
           cargo build --features flutter,hwcodec --release --target aarch64-apple-ios --lib
-          
+
       - name: Upload liblibrustdesk.a Artifacts
         uses: actions/upload-artifact@master
         with:
           name: liblibrustdesk.a
           path: target/aarch64-apple-ios/release/liblibrustdesk.a
 
-      - name: Build rustdesk
+      - name: Build rustdesk ipa
         shell: bash
         run: |
           pushd flutter
-          # flutter build ipa --release --obfuscate --split-debug-info=./split-debug-info --no-codesign
-          # for easy debugging
           flutter build ipa --release --no-codesign
+          popd
 
-      - name: Upload Artifacts
-         # if: env.ANDROID_SIGNING_KEY != null && env.UPLOAD_ARTIFACT == 'true'
+      - name: Upload IPA Artifacts
+        if: env.UPLOAD_ARTIFACT == 'true'
         uses: actions/upload-artifact@master
         with:
-          name: rustdesk-${{ env.VERSION }}-${{ matrix.job.arch }}.apk
+          name: rustdesk-${{ env.VERSION }}-ios.ipa
           path: flutter/build/ios/ipa/*.ipa
 
       - name: Publish ipa package
-         # if: env.ANDROID_SIGNING_KEY != null && env.UPLOAD_ARTIFACT == 'true'
+        if: env.UPLOAD_ARTIFACT == 'true'
         uses: softprops/action-gh-release@v1
         with:
           prerelease: true
           tag_name: ${{ env.TAG_NAME }}
           files: |
             flutter/build/ios/ipa/*.ipa
-
 
   build-for-macOS:
     name: ${{ matrix.job.target }}
